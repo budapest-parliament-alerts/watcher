@@ -1,11 +1,10 @@
 name: Watch tickets
 
-# A "chain" run watches for about 50 minutes and then starts the next chain run,
-# so coverage does not depend on GitHub's cron, which can be late or skipped.
-# The cron only restarts the chain if it ever stops.
+# A "chain" run watches for about 50 minutes and then starts the next chain run.
+# There is no cron on purpose: scheduled runs are listed under the account that last edited the
+# workflow, while chained runs are listed as github-actions. If the chain ever stops, the site emails
+# the owner (watcher alarm) and a manual run with "chain" ticked restarts it.
 on:
-  schedule:
-    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       chain:
@@ -18,23 +17,6 @@ permissions:
   actions: write
 
 jobs:
-  keepalive:
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Restart the chain if nothing is running
-        run: |
-          busy=0
-          for s in in_progress queued pending waiting; do
-            n=$(gh api "repos/${{ github.repository }}/actions/workflows/watch.yml/runs?event=workflow_dispatch&status=$s" --jq '.total_count')
-            busy=$((busy + n))
-          done
-          echo "dispatch runs active: $busy"
-          [ "${{ vars.WATCHER_PAUSED }}" != "true" ] || exit 0
-          [ "$busy" -gt 0 ] || gh workflow run watch.yml -R "${{ github.repository }}" --ref main -f chain=true
-
   watch:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -56,6 +38,14 @@ jobs:
         if: steps.active.outputs.on == 'true'
       - run: npm ci --no-audit --no-fund
         if: steps.active.outputs.on == 'true'
+      - name: Pass Bing Webmaster numbers to the dashboard
+        if: steps.active.outputs.on == 'true' && inputs.chain
+        continue-on-error: true
+        timeout-minutes: 5
+        run: node bing-fetch.mjs
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          WATCHER_TOKEN: ${{ secrets.WATCHER_TOKEN }}
       - name: Check for open slots (every 3 minutes)
         if: steps.active.outputs.on == 'true'
         # A step timeout (unlike the job timeout) still lets "Start the next run" go ahead.

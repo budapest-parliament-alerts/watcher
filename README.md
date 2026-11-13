@@ -7,7 +7,7 @@ for returned Hungarian Parliament visit tickets on the dates people are waiting 
 - `watch.js` opens the ticket page in a headless browser like a normal visitor and checks at most 25 dates every
   3 minutes. Runs chain themselves (about 50 minutes each); a 30-minute cron restarts the chain if it stops.
   Set the repository variable `WATCHER_PAUSED` to `true` to stop.
-- `bing-fetch.mjs` passes Bing Webmaster numbers to the site's dashboard once an hour.
+- `bing-fetch.mjs` passes Bing Webmaster numbers to the site's dashboard at the start of each run (about hourly).
 
 Needs the repository secret `WATCHER_TOKEN` (shared with the site) and the variable `SITE_URL`.
 Independent; not affiliated with the Hungarian Parliament or jegymester.hu.
