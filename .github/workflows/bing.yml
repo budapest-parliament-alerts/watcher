@@ -1,0 +1,24 @@
+name: Bing numbers
+
+# Fetches Bing Webmaster Tools numbers every hour for the dashboard's Bing tab (bing-fetch.mjs).
+# Bing throttles Cloudflare's network, so this runs on GitHub instead of in the site's Worker.
+on:
+  schedule:
+    - cron: '41 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node bing-fetch.mjs
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          WATCHER_TOKEN: ${{ secrets.WATCHER_TOKEN }}

@@ -1,0 +1,74 @@
+name: Watch tickets
+
+# A "chain" run watches for about 50 minutes and then starts the next chain run,
+# so coverage does not depend on GitHub's cron, which can be late or skipped.
+# The cron only restarts the chain if it ever stops.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: Keep watching and start the next run when done
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Restart the chain if nothing is running
+        run: |
+          busy=0
+          for s in in_progress queued pending waiting; do
+            n=$(gh api "repos/${{ github.repository }}/actions/workflows/watch.yml/runs?event=workflow_dispatch&status=$s" --jq '.total_count')
+            busy=$((busy + n))
+          done
+          echo "dispatch runs active: $busy"
+          [ "${{ vars.WATCHER_PAUSED }}" != "true" ] || exit 0
+          [ "$busy" -gt 0 ] || gh workflow run watch.yml -R "${{ github.repository }}" --ref main -f chain=true
+
+  watch:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    # One watcher at a time; a new run waits for the previous one to finish.
+    concurrency:
+      group: watcher
+      cancel-in-progress: false
+    container: mcr.microsoft.com/playwright:v1.56.1-noble
+    env:
+      TZ: Europe/Budapest
+      HOME: /root
+    steps:
+      # Set the repository variable WATCHER_PAUSED to 'true' to stop watching.
+      - name: Check the watcher is switched on
+        id: active
+        run: echo "on=${{ vars.WATCHER_PAUSED == 'true' && 'false' || 'true' }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: steps.active.outputs.on == 'true'
+      - run: npm ci --no-audit --no-fund
+        if: steps.active.outputs.on == 'true'
+      - name: Check for open slots (every 3 minutes)
+        if: steps.active.outputs.on == 'true'
+        # A step timeout (unlike the job timeout) still lets "Start the next run" go ahead.
+        timeout-minutes: 58
+        run: node watch.js
+        env:
+          RUN_MINUTES: ${{ inputs.chain && '50' || '1' }}
+          INTERVAL_SECONDS: '180'
+          SITE_URL: ${{ vars.SITE_URL }}
+          WATCHER_TOKEN: ${{ secrets.WATCHER_TOKEN }}
+      - name: Start the next run
+        if: always() && inputs.chain && steps.active.outputs.on == 'true'
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer ${{ github.token }}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/watch.yml/dispatches" \
+            -d '{"ref":"main","inputs":{"chain":"true"}}'
