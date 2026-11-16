@@ -38,8 +38,8 @@ const budapestDay = ms => new Date(ms).toLocaleDateString('en-CA', { timeZone: '
 // looks exactly like a day without visits. So: click any day the calendar allows, and let the
 // page's own events request ask for the day we want (?date=, as the page itself used to ask).
 // That answer lists sold-out slots too. Returns the events the page loaded for that day.
-async function eventsForDate(page, iso, ask) {
-  ask(iso);
+async function loadDay(page, iso, ask, onlyMarketable) {
+  ask(iso, onlyMarketable);
   const picker = page.locator('bs-datepicker-container, .bs-datepicker').first();
   const resp = page.waitForResponse(r => r.url().includes('/rest/production/480000/events') && r.status() === 200, { timeout: 30000 });
   resp.catch(() => {});
@@ -54,7 +54,23 @@ async function eventsForDate(page, iso, ask) {
   if (!clicked) await page.reload({ waitUntil: 'commit', timeout: 60000 });
   const body = await (await resp).json();
   await sleep(500);
+  return body;
+}
+
+async function eventsForDate(page, iso, ask) {
+  const body = await loadDay(page, iso, ask, false);
   const events = (body.events || []).filter(e => budapestDay(e.startDate) === iso);
+  // An 'available' slot is not always one a visitor can buy (a user clicked straight through and found nothing).
+  // Ask the page's public list too and log the difference, to learn whether alerts should rely on it.
+  if (events.some(e => e.status === 'available')) {
+    try {
+      const pub = new Set(((await loadDay(page, iso, ask, true)).events || []).map(e => e.id));
+      for (const e of events) if (e.status === 'available') e.public = pub.has(e.id);
+    } catch (err) { console.log(iso, 'public list check failed:', err.message); }
+    // An empty public answer hides the date picker; reload so the next date can use it again.
+    ask(iso, false);
+    await page.reload({ waitUntil: 'networkidle', timeout: 60000 }).catch(() => {});
+  }
   // Past the last day jegymester sells for: not on sale yet, which is not the same as no visits.
   if (!events.length && Number(body.maxDate) && budapestMidnight(iso) > Number(body.maxDate)) return { events, notOnSale: true, note: 'not on sale yet' };
   return { events, ...(events.length ? {} : { note: 'no visits that day' }) };
@@ -74,11 +90,11 @@ async function checkOnce(browser, dates) {
 
 async function checkDates(page, dates) {
   {
-    let wanted = null;
+    let wanted = null, marketable = false;
     await page.route('**/rest/production/480000/events*', route => {
       if (!wanted) return route.continue();
       const url = new URL(route.request().url());
-      url.search = `?date=${budapestMidnight(wanted)}`;
+      url.search = `?date=${budapestMidnight(wanted)}${marketable ? '&onlyMarketable=true' : ''}`;
       return route.continue({ url: url.toString() });
     });
     await page.goto(PAGE, { waitUntil: 'networkidle', timeout: 90000 });
@@ -86,7 +102,7 @@ async function checkDates(page, dates) {
     let errors = 0;
     for (const iso of dates) {
       if (page.isClosed()) break;
-      try { out[iso] = await eventsForDate(page, iso, d => { wanted = d; }); }
+      try { out[iso] = await eventsForDate(page, iso, (d, m) => { wanted = d; marketable = m; }); }
       catch (err) { errors++; console.log(iso, 'skipped:', err.message); }
       await page.keyboard.press('Escape').catch(() => {});
     }
@@ -117,7 +133,7 @@ async function main() {
         const result = dates.length ? await checkOnce(browser, dates) : {};
         if (!dates.length) console.log(new Date().toISOString(), 'nobody is waiting for a date right now');
         for (const [iso, r] of Object.entries(result)) {
-          console.log(new Date().toISOString(), iso, r.note || r.events.map(e => `${budapestTime(e.startDate)} ${e.status}`).join(' | ') || 'no events');
+          console.log(new Date().toISOString(), iso, r.note || r.events.map(e => `${budapestTime(e.startDate)} ${e.status}${'public' in e ? (e.public ? ' (public)' : ' (NOT in public list)') : ''}`).join(' | ') || 'no events');
         }
         let r = await site('/api/watcher/report', { results: result });
         console.log(`site: ${r.opened} slot(s) opened, ${r.queued} alert email(s) queued, ${r.sent} sent, ${r.remaining} waiting`);
